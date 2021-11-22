@@ -1,13 +1,12 @@
 
-import { Observable, of, Subscriber } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { Observable } from 'rxjs';
 
 const SEC = 1000;
 const MIN = SEC * 60;
 const HOUR = MIN * 60;
 const DAY = HOUR * 24;
-const MONTH = DAY * 30;
-const YEAR = MONTH * 12;
+const YEAR = DAY * 365.2422;
+const MONTH = YEAR / 12;
 
 /**
  * Settings that determind how a time span will be described.
@@ -16,12 +15,17 @@ export interface IConfig {
   /**
    * A string containing a `[t]` token to descibe a future time
    */
-  describeFuture: string;
+  describeFuture?: string;
+
+  /**
+   * A string containing a description for zero time difference
+   */
+   describeZero: string;
 
   /**
    * A string containing a `[t]` token to descibe a past time
    */
-  describePast: string;
+  describePast?: string;
 
   /**
    * The units to use to break up the time desciption into words.
@@ -41,7 +45,7 @@ export interface IConfig {
   /**
    * Option to add an `s` for english plural unit descriptions
    */
-  addPluralS: boolean;
+  addPluralS?: boolean;
 
   /**
    * Allows a user to choose the separation between words eg. " | " will result in "1 yr | 1 mth"
@@ -52,6 +56,7 @@ export interface IConfig {
 export const DEFAULT:IConfig = {
   describeFuture: 'in [t]',
   describePast: '[t] ago',
+  describeZero: 'now',
   units: [
     { ms: YEAR, label: ' yr' },
     { ms: MONTH, label: ' mth' },
@@ -66,33 +71,48 @@ export const DEFAULT:IConfig = {
 
 /**
  * 
- * @param ms Time difference (future = negative, past = positive)
+ * @param ms Time difference in milliseconds. Typically the current time subtracted by
+ * the evaluated time. Eg `Date.now() - prevBirthday` or `Date.now() - nextBirthday`
+ * (future = negative, past = positive)
  * @param maxWordCount Max number of words to describe the time
  * @param config See `IConfig`
  * @returns 
  */
-function describe(ms:number, maxWordCount = 1, config:IConfig = DEFAULT):{description:string,msDurationValid:number} {
-  let t = Math.abs(ms) + 99; // add time to allow for computational delay
+export function describe(ms:number, maxWordCount = 1, config:IConfig = DEFAULT):{description:string,msDurationValid:number} {
+  let t = Math.floor(ms * 0.001) * 1000;
   let msDurationValid = SEC;
-  let words = [] as string[];
+  const words:{value:number,label:string,ms:number}[] = [];
+  let isMax = false;
   for (let i = 0; i < config.units.length; i++) {
     const unit = config.units[i];
-    if (t >= unit.ms || words.length) {
-      const f = (words.length + 1 >= maxWordCount) ? Math.round : Math.floor; // rounding the final unit improves UX
-      let val = f(t / unit.ms);
-      let out = `${val}${unit.label}${config.addPluralS && val!==1 ? 's' : ''}`;
-      words.push(out);
-      if (words.length >= maxWordCount) {
+    const isLastUnit = i + 1 === config.units.length;
+    const nextUnit = config.units[i+1] ?? config.units[i];
+    const at = Math.abs(t);
+    if (t < -unit.ms || t >= unit.ms || words.length) {
+      if (t < 0 && words.length) words[words.length - 1].value--;
+      const value = Math.abs(Math.floor(t / unit.ms));
+      if (!isMax) words.push({...unit, value});
+      isMax = isMax || words.length >= maxWordCount;
+      if (isLastUnit || isMax) {
         const rem = ms % unit.ms;
-        msDurationValid = (ms < 0 ? -rem : (unit.ms - rem)) || unit.ms;
-        break;
+        msDurationValid = (ms < 0 ? (-rem || unit.ms) : (unit.ms - rem));
+        if (ms >= 0 || isLastUnit || value > 1) break;
       }
       t = t % unit.ms;
     }
   }
-  const temp = ms < 0 ? config.describeFuture : config.describePast;
-  let description = temp.replace('[t]', words.join(config.wordSeparator));
-  if (!words.length || Math.round(ms * 0.001) === 0) description = 'now';
+  if(!words.length && ms < 0) {
+    const lastUnit = config.units[config.units.length - 1]
+    words.push({ ...lastUnit, value:1 });
+    msDurationValid = -(ms % lastUnit.ms) || lastUnit.ms;
+  }
+  const tmpl = ms < 0 ? config.describeFuture : config.describePast;
+  const phrase = words.map(w => `${w.value}${w.label}${config.addPluralS && w.value!==1 ? 's' : ''}`).join(config.wordSeparator);
+  let description = tmpl ? tmpl.replace('[t]', phrase) : phrase;
+  if (!words.length) {
+    description = config.describeZero;
+    msDurationValid = SEC - ms % SEC;
+  }
   return {
     description,
     msDurationValid,
@@ -100,7 +120,7 @@ function describe(ms:number, maxWordCount = 1, config:IConfig = DEFAULT):{descri
 }
 
 export function describeTimespan(msTo:number, msFrom = Date.now(), maxWordCount = 1, config:IConfig = DEFAULT) {
-  let ms = msFrom - msTo; // future = negative, past = positive
+  const ms = msFrom - msTo; // future = negative, past = positive
   return describe(ms, maxWordCount, config).description;
 }
 
